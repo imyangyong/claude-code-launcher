@@ -164,3 +164,58 @@ describe('iTerm2 launcher', () => {
     await expect(launchInTerminal('/path', 'iTerm2')).rejects.toThrow('execution error');
   });
 });
+
+describe('Ghostty launcher', () => {
+  const GHOSTTY_BIN = '/Applications/Ghostty.app/Contents/MacOS/ghostty';
+
+  beforeEach(() => {
+    mockExistsSync.mockReturnValue(true);
+    mockExecFile.mockClear();
+    mockExecFile.mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(null, '', '');
+    });
+  });
+
+  it('calls execFile with the ghostty binary', async () => {
+    await launchInTerminal('/Users/alice/myapp', 'Ghostty');
+    expect(mockExecFile).toHaveBeenCalledWith(
+      GHOSTTY_BIN,
+      expect.any(Array),
+      expect.any(Function)
+    );
+  });
+
+  it('passes -e zsh -c <script> as args', async () => {
+    await launchInTerminal('/Users/alice/myapp', 'Ghostty');
+    const args: string[] = mockExecFile.mock.calls[0][1];
+    expect(args[0]).toBe('-e');
+    expect(args[1]).toBe('zsh');
+    expect(args[2]).toBe('-c');
+    expect(args[3]).toContain("cd '/Users/alice/myapp'");
+    expect(args[3]).toContain('exec $SHELL');
+  });
+
+  it('escapes single quotes in path (shell-style, no backslash doubling)', async () => {
+    await launchInTerminal("/Users/alice/it's", 'Ghostty');
+    const args: string[] = mockExecFile.mock.calls[0][1];
+    expect(args[3]).toContain("cd '/Users/alice/it'\\''s'");
+    expect(args[3]).not.toContain('\\\\');
+  });
+
+  it('rejects when execFile returns non-null error', async () => {
+    mockExecFile.mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(new Error('spawn failed'), '', '');
+    });
+    await expect(launchInTerminal('/path', 'Ghostty')).rejects.toThrow('spawn failed');
+  });
+
+  it('does NOT reject on non-empty stderr (no AppleScript check)', async () => {
+    mockExecFile.mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(null, '', 'some warning on stderr');
+    });
+    await expect(launchInTerminal('/path', 'Ghostty')).resolves.toBeUndefined();
+  });
+});

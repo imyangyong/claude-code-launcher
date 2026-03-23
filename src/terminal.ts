@@ -59,6 +59,22 @@ end tell`;
   await execFilePromise('osascript', ['-e', script]);
 }
 
+const GHOSTTY_BIN = '/Applications/Ghostty.app/Contents/MacOS/ghostty';
+
+async function launchGhostty(projectPath: string): Promise<void> {
+  const escaped = escapeForShell(projectPath);
+  const shellScript = `cd '${escaped}' && claude; exec $SHELL`;
+  return new Promise((resolve, reject) => {
+    _execFile(GHOSTTY_BIN, ['-e', 'zsh', '-c', shellScript], (error, _stdout, stderr) => {
+      if (error) {
+        reject(new Error(error.message + (stderr ? '\n' + stderr : '')));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 export async function launchInTerminal(
   projectPath: string,
   app: TerminalApp
@@ -69,6 +85,8 @@ export async function launchInTerminal(
       return launchTerminalApp(projectPath);
     case 'iTerm2':
       return launchITerm2(projectPath);
+    case 'Ghostty':
+      return launchGhostty(projectPath);
     default:
       throw new Error(`Unsupported terminal: ${app}`);
   }

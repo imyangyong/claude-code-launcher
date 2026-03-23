@@ -18,9 +18,10 @@ A VSCode extension named `claude-code-launcher` that provides a single command t
 - Supports three macOS terminals: Terminal.app, iTerm2, Ghostty
 - User selects terminal via VS Code Settings
 - On activation: opens the selected terminal, `cd` to the workspace root, and runs `claude`
+- On success: no notification shown (silent success)
 - If no workspace is open: shows an error notification
 - If the terminal launch fails: shows an error notification with the failure reason
-- If the configured terminal app is not installed: shows a friendly error message (not raw stderr)
+- If the configured terminal app is not installed: shows a friendly error message
 
 ---
 
@@ -46,10 +47,11 @@ Single responsibility per file:
 - `activate(context)`: registers `claude-code-launcher.openInTerminal` command
 - On command execution:
   1. Read `claudeCodeLauncher.terminal` from workspace/user settings
-  2. Resolve workspace root: use `vscode.workspace.workspaceFolders[0].uri.fsPath` (always the first folder; multiple-root workspaces are out of scope — the first folder is used without prompting)
-  3. If `workspaceFolders` is undefined or empty: `vscode.window.showErrorMessage("No workspace folder open")`
-  4. Otherwise: call `launchInTerminal(projectPath, terminalApp)`
-  5. On error from `launchInTerminal`: `vscode.window.showErrorMessage(err.message)`
+  2. Resolve workspace root: `vscode.workspace.workspaceFolders[0].uri.fsPath` (always the first folder; multi-root is out of scope)
+  3. If `workspaceFolders` is undefined or empty: `vscode.window.showErrorMessage("No workspace folder open")` and return
+  4. Call `await launchInTerminal(projectPath, terminalApp)`
+  5. On error: `vscode.window.showErrorMessage(err.message)`
+  6. On success: do nothing (no notification)
 
 ### terminal.ts
 
@@ -62,71 +64,82 @@ export async function launchInTerminal(
 ): Promise<void>
 ```
 
-Internally dispatches to a per-app launcher. All launchers use Node.js `child_process.exec` and reject with a descriptive `Error` on failure.
+#### App existence checks
 
-#### Path escaping
+Before any exec, each launcher checks whether the app is installed using `fs.existsSync` at its known path:
 
-Before embedding `projectPath` in any AppleScript string (single-quoted), escape single quotes:
+| App | Check path |
+|-----|-----------|
+| Terminal.app | `/System/Applications/Utilities/Terminal.app` |
+| iTerm2 | `/Applications/iTerm.app` |
+| Ghostty | `/Applications/Ghostty.app/Contents/MacOS/ghostty` |
+
+If the path does not exist: throw `new Error("<AppName> is not installed")`.
+
+#### Path escaping for AppleScript (Terminal.app and iTerm2)
+
+Before embedding `projectPath` in an AppleScript single-quoted string, escape single quotes:
+
 ```ts
-const escaped = projectPath.replace(/'/g, "'\\''");
-```
-For the Ghostty CLI invocation, pass `projectPath` as a shell argument and use `shell-quote` or manual escaping appropriate for the shell command string.
-
-#### Terminal.app
-
-```applescript
-osascript -e 'tell application "Terminal"
-  activate
-  do script "cd '\''<escaped-path>'\'' && claude"
-end tell'
+const appleScriptPath = projectPath.replace(/\\/g, '\\\\').replace(/'/g, "'\\''");
 ```
 
-Opens a new terminal window (or tab in the frontmost window, per Terminal.app default behavior) and runs the command.
+The resulting path is embedded as: `cd '${appleScriptPath}' && claude`
 
-#### iTerm2
+#### Terminal.app launcher
+
+Uses `child_process.exec` to run osascript:
 
 ```applescript
-osascript -e 'tell application "iTerm2"
+tell application "Terminal"
   activate
+  do script "cd '<escaped-path>' && claude"
+end tell
+```
+
+`do script` always opens a new window in Terminal.app.
+
+After exec: if the returned `stderr` is non-empty and contains known AppleScript error patterns (substring `"execution error"` or `"error"`), throw `new Error(stderr)`.
+
+#### iTerm2 launcher
+
+Uses `child_process.exec` to run osascript:
+
+```applescript
+tell application "iTerm2"
+  activate
+  if (count of windows) = 0 then
+    create window with default profile
+  end if
   tell current window
     create tab with default profile
     tell current session of current tab
-      write text "cd '\''<escaped-path>'\'' && claude"
+      write text "cd '<escaped-path>' && claude"
     end tell
   end tell
-end tell'
+end tell
 ```
 
-Creates a new tab in the current iTerm2 window and sends the command followed by a newline (the `write text` verb sends text + return). If iTerm2 has no open window, the AppleScript error will be caught and surfaced as an error message.
+`write text` sends the string followed by a return keystroke. If no window is open, a new window is created before creating a tab.
 
-#### Ghostty
+After exec: same silent-failure check as Terminal.app (check stderr for `"execution error"` or `"error"`).
 
-Uses the `ghostty` CLI binary directly (does not use `open -a`):
+#### Ghostty launcher
 
-```sh
-/Applications/Ghostty.app/Contents/MacOS/ghostty \
-  --command="zsh -c 'cd <escaped-path> && claude; exec $SHELL'"
+Does **not** use AppleScript. Uses `child_process.execFile` directly with the Ghostty binary:
+
+```ts
+const ghosttyBin = '/Applications/Ghostty.app/Contents/MacOS/ghostty';
+const shellCommand = `cd '${appleScriptPath}' && claude; exec $SHELL`;
+// appleScriptPath escaping applies here too — same single-quote escaping rule
+execFile(ghosttyBin, ['--command', `zsh -c '${shellCommand}'`]);
 ```
 
-The binary path `/Applications/Ghostty.app/Contents/MacOS/ghostty` is used. If the binary does not exist at that path, the launcher throws `Error("Ghostty is not installed at /Applications/Ghostty.app")` before calling `exec`.
+`exec $SHELL` is intentional: it keeps the Ghostty window open after `claude` exits, matching the behavior of Terminal.app and iTerm2 which remain open after the command completes.
 
-The `exec $SHELL` at the end keeps the terminal session alive after `claude` exits.
+`execFile` is used (not `exec`) to avoid shell injection from the binary path.
 
-#### Detecting missing terminal apps
-
-Before executing, each launcher checks whether the app exists:
-
-| App | Check |
-|-----|-------|
-| Terminal.app | `fs.existsSync("/Applications/Utilities/Terminal.app")` or `"/System/Applications/Utilities/Terminal.app"` |
-| iTerm2 | `fs.existsSync("/Applications/iTerm.app")` |
-| Ghostty | `fs.existsSync("/Applications/Ghostty.app/Contents/MacOS/ghostty")` |
-
-If the app is not found: throw `Error("<AppName> is not installed")`. This produces a friendly message via `showErrorMessage`.
-
-#### Silent AppleScript failures
-
-After `child_process.exec` completes, check if `stderr` contains known error patterns (e.g., `"execution error"`, `"Can't get current window"`). If so, throw an `Error` with the stderr content so it surfaces to the user.
+Silent-failure check does **not** apply to Ghostty (no AppleScript involved).
 
 ---
 
@@ -172,12 +185,13 @@ After `child_process.exec` completes, check if `stderr` contains known error pat
 ```
 User triggers command
   → extension.ts reads config + workspace path (first folder)
-  → terminal.ts checks app is installed
-  → terminal.ts escapes path
-  → terminal.ts builds osascript / ghostty CLI command
-  → child_process.exec runs it
-  → (checks stderr for silent errors)
-  → System terminal opens new window/tab, runs: cd <workspace> && claude
+  → terminal.ts checks app is installed (fs.existsSync)
+  → terminal.ts escapes path (single-quote escaping)
+  → Terminal.app / iTerm2: child_process.exec runs osascript
+  → Ghostty: child_process.execFile runs ghostty binary
+  → (Terminal.app / iTerm2: check stderr for silent AppleScript errors)
+  → System terminal opens new window/tab, runs: cd '<path>' && claude
+  → On success: silent (no notification)
 ```
 
 ---
@@ -187,10 +201,11 @@ User triggers command
 | Scenario | Behavior |
 |----------|----------|
 | No workspace folder open | `showErrorMessage("No workspace folder open")` |
-| Configured terminal not installed | `showErrorMessage("<App> is not installed")` |
-| `child_process.exec` non-zero exit | `showErrorMessage` with stderr content |
-| AppleScript silent error in stderr | `showErrorMessage` with stderr content |
-| Path contains single quotes | Escaped via `replace(/'/g, "'\\''")` before embedding |
+| App not installed | `showErrorMessage("<App> is not installed")` |
+| exec / execFile non-zero exit | `showErrorMessage` with stderr content |
+| AppleScript silent error in stderr (Terminal.app, iTerm2 only) | `showErrorMessage` with stderr content |
+| Single quotes in path | Escaped via `replace(/'/g, "'\\''")` before embedding |
+| Success | Silent — no notification |
 
 ---
 

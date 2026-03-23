@@ -20,8 +20,8 @@ A VSCode extension named `claude-code-launcher` that provides a single command t
 - On activation: opens the selected terminal, `cd` to the workspace root, and runs `claude`
 - On success: silent (no notification)
 - If no workspace is open: shows an error notification
-- If the terminal launch fails: shows an error notification with the failure reason
 - If the configured terminal app is not installed: shows a friendly error message
+- If the terminal launch fails: shows an error notification with the failure reason
 
 ---
 
@@ -41,13 +41,15 @@ package.json       — contributes command, context menus, configuration schema
 ### extension.ts
 
 - `activate(context)`: registers `claude-code-launcher.openInTerminal` command
-- On command execution:
-  1. Read `claudeCodeLauncher.terminal` from workspace/user settings
-  2. Resolve workspace root: `vscode.workspace.workspaceFolders[0].uri.fsPath` (always the first folder; multi-root is out of scope)
-  3. If `workspaceFolders` is undefined or empty: `vscode.window.showErrorMessage("No workspace folder open")` and return
-  4. `await launchInTerminal(projectPath, terminalApp)`
+- On command execution (in this order):
+  1. Check `vscode.workspace.workspaceFolders` — if undefined or empty: `showErrorMessage("No workspace folder open")` and return immediately
+  2. Read `claudeCodeLauncher.terminal` from settings
+  3. Resolve workspace root: `workspaceFolders[0].uri.fsPath`
+  4. `await launchInTerminal(projectPath, terminalApp)` — this performs the app-existence check
   5. On error (any thrown Error): `vscode.window.showErrorMessage(err.message)`
-  6. On success: do nothing (no notification)
+  6. On success: do nothing
+
+**Evaluation order:** workspace check always runs first, before app-existence check.
 
 ### terminal.ts
 
@@ -66,15 +68,13 @@ All errors are thrown as `Error` instances with human-readable messages.
 
 #### App existence checks
 
-Before any exec, check that the app is installed:
+Before any exec, check that the app is installed using `fs.existsSync`:
 
-| App | Existence sentinel path | Launch method |
-|-----|------------------------|---------------|
+| App | Existence sentinel path | Launch resource |
+|-----|------------------------|-----------------|
 | Terminal.app | `/System/Applications/Utilities/Terminal.app` | `execFile('osascript', ...)` |
-| iTerm2 | `/Applications/iTerm.app` | `execFile('osascript', ...)` |
+| iTerm2 | `/Applications/iTerm.app` (bundle name on disk is `iTerm` — no "2") | `execFile('osascript', ...)` |
 | Ghostty | `/Applications/Ghostty.app` | `execFile('/Applications/Ghostty.app/Contents/MacOS/ghostty', ...)` |
-
-**iTerm2 note:** The app bundle on disk is named `iTerm.app` (no "2"). The AppleScript application name is `"iTerm2"` (with "2"). Both values are correct and intentional — this is not a typo.
 
 If existence check fails: throw `new Error("<AppName> is not installed")`.
 
@@ -82,30 +82,30 @@ If existence check fails: throw `new Error("<AppName> is not installed")`.
 
 #### Node.js exec strategy
 
-All launchers use `child_process.execFile` wrapped in a `Promise`, **not** `child_process.exec`. This avoids an extra shell-escaping layer:
+All launchers use `child_process.execFile` wrapped in a `Promise` (not `child_process.exec`), avoiding a shell-escaping layer:
 
-- Terminal.app and iTerm2: `execFile('osascript', ['-e', appleScriptString])`
-- Ghostty: `execFile(ghosttyBin, ['--command', 'zsh', '--', '-c', shellScript])`
+- Terminal.app and iTerm2: `execFile('osascript', ['-e', scriptString])`
+- Ghostty: `execFile(ghosttyBin, ['-e', 'zsh', '-c', shellScript])`
 
-The `appleScriptString` or `shellScript` is a JavaScript string passed directly as an argument — no shell interpolation occurs.
+The `-e` flag is the standard POSIX terminal flag to execute a command; Ghostty follows this convention.
 
 ---
 
-#### Error callback wrapping (applies to all three launchers)
+#### Error callback wrapping (all launchers)
 
 The `execFile` callback receives `(error, stdout, stderr)`. The promise rejects if:
 
-1. **`error` is non-null** (non-zero exit or spawn failure): reject with `new Error(error.message + (stderr ? '\n' + stderr : ''))`
-2. **`error` is null but `stderr` is non-empty and contains `"execution error"` or `"AppleScript"`** (AppleScript launchers only — Terminal.app and iTerm2): reject with `new Error(stderr)`
+1. **`error` is non-null** (Node.js sets this when the process exits with non-zero code or fails to spawn): reject with `new Error(error.message + (stderr ? '\n' + stderr : ''))`
+2. **`error` is null but `stderr` is non-empty and contains `"execution error"` or `"AppleScript"`** — AppleScript launchers only (Terminal.app and iTerm2): reject with `new Error(stderr)`
 
-For Ghostty: only condition 1 applies (condition 2 is not checked).
+For Ghostty: only condition 1 applies. Node.js `execFile` sets `error` non-null on any non-zero exit code, so Ghostty process failures are reliably detected. If Ghostty exits 0 but the shell command fails internally, that failure runs inside the terminal window and is not detectable from the extension — this is accepted behavior.
 
 ---
 
 #### Path escaping
 
 **AppleScript context (Terminal.app and iTerm2):**
-The path is embedded inside an AppleScript double-quoted string that contains a shell single-quoted argument. The string is passed directly to `execFile` — no shell layer. Escape backslashes first, then single quotes:
+Escape backslashes first, then single quotes:
 
 ```ts
 function escapeForAppleScript(p: string): string {
@@ -116,7 +116,7 @@ function escapeForAppleScript(p: string): string {
 Embedded as: `cd '${escapeForAppleScript(path)}' && claude`
 
 **Shell context (Ghostty):**
-The path is embedded in a zsh `-c` script string, passed as a direct `execFile` argument (no shell interpolation). Escape only single quotes — do not double backslashes:
+The path is a direct `execFile` argument — no shell layer. Escape only single quotes (do not double backslashes):
 
 ```ts
 function escapeForShell(p: string): string {
@@ -139,15 +139,17 @@ end tell
 `]);
 ```
 
-`do script` opens a new Terminal window and runs the command.
+`do script` opens a new Terminal.app window and runs the command.
 
 ---
 
 #### iTerm2 launcher
 
+Uses the AppleScript bundle identifier `com.googlecode.iterm2` instead of the app name to avoid version-specific name resolution issues:
+
 ```ts
 execFile('osascript', ['-e', `
-tell application "iTerm2"
+tell application id "com.googlecode.iterm2"
   activate
   if (count of windows) = 0 then
     create window with default profile
@@ -162,21 +164,21 @@ end tell
 `]);
 ```
 
-`write text` sends the string followed by a return keystroke. If no window is open, a new window is created before creating a tab.
+`write text` sends the string followed by a return keystroke. If no window is open, a new window is created before the tab. The existence check path (`/Applications/iTerm.app`) is distinct from the AppleScript bundle ID — both are correct for the same app.
 
 ---
 
 #### Ghostty launcher
 
-Ghostty's `--command` flag sets the shell executable. Arguments after `--` are forwarded to that executable:
-
 ```ts
 const ghosttyBin = '/Applications/Ghostty.app/Contents/MacOS/ghostty';
 const shellScript = `cd '${escapeForShell(projectPath)}' && claude; exec $SHELL`;
-execFile(ghosttyBin, ['--command', 'zsh', '--', '-c', shellScript]);
+execFile(ghosttyBin, ['-e', 'zsh', '-c', shellScript]);
 ```
 
-`exec $SHELL` is intentional: it keeps the Ghostty window open after `claude` exits, matching the behavior of Terminal.app and iTerm2 which remain open after a command completes.
+`-e program args...` is the standard terminal flag; Ghostty follows this convention. The args `zsh`, `-c`, and `shellScript` are passed as separate elements — no extra shell interpolation occurs.
+
+`exec $SHELL` keeps the Ghostty window open after `claude` exits, matching Terminal.app and iTerm2 behavior.
 
 ---
 
@@ -221,12 +223,13 @@ execFile(ghosttyBin, ['--command', 'zsh', '--', '-c', shellScript]);
 
 ```
 User triggers command
-  → extension.ts reads config + workspace path (first folder)
-  → terminal.ts checks app is installed (fs.existsSync on bundle path)
-  → terminal.ts escapes path (AppleScript or shell context)
+  → Check workspaceFolders (error + return if empty)
+  → Read config, resolve first workspace path
+  → terminal.ts: check app bundle installed (fs.existsSync)
+  → terminal.ts: escape path (AppleScript or shell context)
   → Terminal.app / iTerm2: execFile('osascript', ['-e', script])
-  → Ghostty: execFile(ghosttyBin, ['--command', 'zsh', '--', '-c', script])
-  → Promise rejects on non-zero exit or AppleScript stderr error
+  → Ghostty: execFile(ghosttyBin, ['-e', 'zsh', '-c', script])
+  → Reject on non-zero exit or AppleScript stderr error
   → extension.ts shows error message on rejection
   → On success: silent
 ```
@@ -237,12 +240,13 @@ User triggers command
 
 | Scenario | Behavior |
 |----------|----------|
-| No workspace folder open | `showErrorMessage("No workspace folder open")` |
+| No workspace folder open | `showErrorMessage("No workspace folder open")` — checked first |
 | App bundle not installed | `showErrorMessage("<App> is not installed")` |
 | execFile non-zero exit / spawn error | `showErrorMessage` with error.message + stderr |
 | AppleScript silent error in stderr (Terminal.app, iTerm2 only) | `showErrorMessage` with stderr |
 | Single quotes in path | Escaped by `escapeForAppleScript` or `escapeForShell` |
 | Backslashes in path | Doubled by `escapeForAppleScript`; unchanged by `escapeForShell` |
+| Shell command fails inside Ghostty after clean launch | Not detectable; failure appears in the terminal window |
 | Success | Silent — no notification |
 
 ---

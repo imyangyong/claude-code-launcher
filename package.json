@@ -1,0 +1,54 @@
+{
+  "name": "claude-code-launcher",
+  "displayName": "Claude Code Launcher",
+  "description": "Open the current project in a system terminal and launch Claude Code CLI",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claude-code-launcher.openInTerminal",
+        "title": "Open in Terminal (Claude Code)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "claude-code-launcher.openInTerminal", "group": "navigation" }
+      ],
+      "explorer/context": [
+        { "command": "claude-code-launcher.openInTerminal", "group": "navigation" }
+      ],
+      "commandPalette": [
+        { "command": "claude-code-launcher.openInTerminal" }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Code Launcher",
+      "properties": {
+        "claudeCodeLauncher.terminal": {
+          "type": "string",
+          "enum": ["Terminal", "iTerm2", "Ghostty"],
+          "default": "Terminal",
+          "description": "The system terminal application to use when opening Claude Code."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "jest",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.22.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "typescript": "^5.3.0"
+  }
+}

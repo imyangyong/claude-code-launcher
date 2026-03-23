@@ -15,12 +15,43 @@ function checkInstalled(app: TerminalApp): void {
   }
 }
 
+function execFilePromise(bin: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    _execFile(bin, args, (error, _stdout, stderr) => {
+      if (error) {
+        reject(new Error(error.message + (stderr ? '\n' + stderr : '')));
+        return;
+      }
+      if (stderr && (stderr.includes('execution error') || stderr.includes('AppleScript'))) {
+        reject(new Error(stderr));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function launchTerminalApp(projectPath: string): Promise<void> {
+  const escaped = escapeForAppleScript(projectPath);
+  const script = `
+tell application "Terminal"
+  activate
+  do script "cd '${escaped}' && claude"
+end tell`;
+  await execFilePromise('osascript', ['-e', script]);
+}
+
 export async function launchInTerminal(
   projectPath: string,
   app: TerminalApp
 ): Promise<void> {
   checkInstalled(app);
-  // launchers added in subsequent tasks
+  switch (app) {
+    case 'Terminal':
+      return launchTerminalApp(projectPath);
+    default:
+      throw new Error(`Unsupported terminal: ${app}`);
+  }
 }
 
 export function escapeForAppleScript(p: string): string {

@@ -1,8 +1,11 @@
 import * as fs from 'fs';
+import * as child_process from 'child_process';
 import { escapeForAppleScript, escapeForShell, launchInTerminal, TerminalApp } from '../terminal';
 
 jest.mock('fs');
+jest.mock('child_process');
 const mockExistsSync = fs.existsSync as jest.Mock;
+const mockExecFile = child_process.execFile as unknown as jest.Mock;
 
 describe('escapeForAppleScript', () => {
   it('leaves simple paths unchanged', () => {
@@ -62,4 +65,55 @@ describe('app existence paths', () => {
       ).rejects.toThrow(`${app} is not installed`);
     }
   );
+});
+
+describe('Terminal.app launcher', () => {
+  beforeEach(() => {
+    mockExistsSync.mockReturnValue(true);
+    mockExecFile.mockClear();
+    mockExecFile.mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(null, '', '');
+    });
+  });
+
+  it('calls execFile with osascript and -e flag', async () => {
+    await launchInTerminal('/Users/alice/myapp', 'Terminal');
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'osascript',
+      expect.arrayContaining(['-e']),
+      expect.any(Function)
+    );
+  });
+
+  it('embeds the project path in the AppleScript', async () => {
+    await launchInTerminal('/Users/alice/myapp', 'Terminal');
+    const script: string = mockExecFile.mock.calls[0][1][1];
+    expect(script).toContain("cd '/Users/alice/myapp'");
+    expect(script).toContain('do script');
+  });
+
+  it('escapes single quotes in path', async () => {
+    await launchInTerminal("/Users/alice/it's", 'Terminal');
+    const script: string = mockExecFile.mock.calls[0][1][1];
+    expect(script).toContain("cd '/Users/alice/it'\\''s'");
+  });
+
+  it('rejects when execFile returns non-null error', async () => {
+    mockExecFile.mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(new Error('osascript failed'), '', 'some error');
+    });
+    await expect(launchInTerminal('/path', 'Terminal')).rejects.toThrow('osascript failed');
+  });
+
+  it('rejects on AppleScript silent error in stderr', async () => {
+    mockExecFile.mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(null, '', 'execution error: Terminal not running (-1712)');
+    });
+    await expect(launchInTerminal('/path', 'Terminal')).rejects.toThrow(
+      'execution error'
+    );
+  });
 });

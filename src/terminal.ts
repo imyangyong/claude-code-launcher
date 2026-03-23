@@ -92,10 +92,20 @@ export async function launchInTerminal(
   }
 }
 
+/**
+ * Escapes a path for embedding inside an AppleScript double-quoted string
+ * that contains a single-quoted shell argument: do script "cd '/path' && claude"
+ * Escapes single quotes (shell) and double quotes (AppleScript string boundary).
+ */
 export function escapeForAppleScript(p: string): string {
-  return p.replace(/'/g, "'\\''");
+  return p.replace(/'/g, "'\\''").replace(/"/g, '\\"');
 }
 
+/**
+ * Escapes a path for embedding inside a single-quoted shell argument
+ * passed directly as an execFile argument (no shell interpolation).
+ * Escapes only single quotes.
+ */
 export function escapeForShell(p: string): string {
   return p.replace(/'/g, "'\\''");
 }

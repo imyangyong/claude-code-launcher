@@ -29,6 +29,12 @@ describe('escapeForAppleScript', () => {
   it('handles both backslashes and single quotes', () => {
     expect(escapeForAppleScript("/a\\b'c")).toBe("/a\\b'\\''c");
   });
+
+  it('escapes double quotes', () => {
+    expect(escapeForAppleScript('/Users/alice/my"project')).toBe(
+      '/Users/alice/my\\"project'
+    );
+  });
 });
 
 describe('escapeForShell', () => {
@@ -99,6 +105,12 @@ describe('Terminal.app launcher', () => {
     expect(script).toContain("cd '/Users/alice/it'\\''s'");
   });
 
+  it('escapes double quotes in path', async () => {
+    await launchInTerminal('/Users/alice/my"project', 'Terminal');
+    const script: string = mockExecFile.mock.calls[0][1][1];
+    expect(script).toContain('cd \'/Users/alice/my\\"project\'');
+  });
+
   it('rejects when execFile returns non-null error', async () => {
     mockExecFile.mockImplementation((...args: any[]) => {
       const cb = args[args.length - 1];
@@ -154,6 +166,12 @@ describe('iTerm2 launcher', () => {
     await launchInTerminal("/Users/alice/it's", 'iTerm2');
     const script: string = mockExecFile.mock.calls[0][1][1];
     expect(script).toContain("cd '/Users/alice/it'\\''s'");
+  });
+
+  it('escapes double quotes in path', async () => {
+    await launchInTerminal('/Users/alice/my"project', 'iTerm2');
+    const script: string = mockExecFile.mock.calls[0][1][1];
+    expect(script).toContain('cd \'/Users/alice/my\\"project\'');
   });
 
   it('rejects on AppleScript silent error in stderr', async () => {

@@ -16,9 +16,6 @@
       }
     ],
     "menus": {
-      "editor/context": [
-        { "command": "claude-code-launcher.openInTerminal", "group": "navigation" }
-      ],
       "explorer/context": [
         { "command": "claude-code-launcher.openInTerminal", "group": "navigation" }
       ],

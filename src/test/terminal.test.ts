@@ -13,14 +13,14 @@ describe('escapeForAppleScript', () => {
     );
   });
 
-  it('doubles backslashes', () => {
+  it('leaves backslashes unchanged', () => {
     expect(escapeForAppleScript('/Users/alice/back\\slash')).toBe(
-      '/Users/alice/back\\\\slash'
+      '/Users/alice/back\\slash'
     );
   });
 
   it('handles both backslashes and single quotes', () => {
-    expect(escapeForAppleScript("/a\\b'c")).toBe("/a\\\\b'\\''c");
+    expect(escapeForAppleScript("/a\\b'c")).toBe("/a\\b'\\''c");
   });
 });
 

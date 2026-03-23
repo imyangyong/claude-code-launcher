@@ -60,30 +60,52 @@ export async function launchInTerminal(
 ): Promise<void>
 ```
 
-All errors from this function are thrown as `Error` instances with human-readable messages.
+All errors are thrown as `Error` instances with human-readable messages.
 
 ---
 
 #### App existence checks
 
-Before any exec, check that the app is installed. Use separate sentinel paths for the existence check vs. the binary to execute:
+Before any exec, check that the app is installed:
 
-| App | Existence check path | Binary / app used for launch |
-|-----|---------------------|-------------------------------|
-| Terminal.app | `/System/Applications/Utilities/Terminal.app` | via osascript |
-| iTerm2 | `/Applications/iTerm.app` (bundle name on disk is `iTerm`, AppleScript name is `"iTerm2"` — this discrepancy is intentional and correct) | via osascript |
-| Ghostty | `/Applications/Ghostty.app` (`.app` bundle) | `/Applications/Ghostty.app/Contents/MacOS/ghostty` (binary inside bundle) |
+| App | Existence sentinel path | Launch method |
+|-----|------------------------|---------------|
+| Terminal.app | `/System/Applications/Utilities/Terminal.app` | `execFile('osascript', ...)` |
+| iTerm2 | `/Applications/iTerm.app` | `execFile('osascript', ...)` |
+| Ghostty | `/Applications/Ghostty.app` | `execFile('/Applications/Ghostty.app/Contents/MacOS/ghostty', ...)` |
+
+**iTerm2 note:** The app bundle on disk is named `iTerm.app` (no "2"). The AppleScript application name is `"iTerm2"` (with "2"). Both values are correct and intentional — this is not a typo.
 
 If existence check fails: throw `new Error("<AppName> is not installed")`.
 
 ---
 
+#### Node.js exec strategy
+
+All launchers use `child_process.execFile` wrapped in a `Promise`, **not** `child_process.exec`. This avoids an extra shell-escaping layer:
+
+- Terminal.app and iTerm2: `execFile('osascript', ['-e', appleScriptString])`
+- Ghostty: `execFile(ghosttyBin, ['--command', 'zsh', '--', '-c', shellScript])`
+
+The `appleScriptString` or `shellScript` is a JavaScript string passed directly as an argument — no shell interpolation occurs.
+
+---
+
+#### Error callback wrapping (applies to all three launchers)
+
+The `execFile` callback receives `(error, stdout, stderr)`. The promise rejects if:
+
+1. **`error` is non-null** (non-zero exit or spawn failure): reject with `new Error(error.message + (stderr ? '\n' + stderr : ''))`
+2. **`error` is null but `stderr` is non-empty and contains `"execution error"` or `"AppleScript"`** (AppleScript launchers only — Terminal.app and iTerm2): reject with `new Error(stderr)`
+
+For Ghostty: only condition 1 applies (condition 2 is not checked).
+
+---
+
 #### Path escaping
 
-Two separate escaping strategies are used depending on context:
-
 **AppleScript context (Terminal.app and iTerm2):**
-The path is embedded inside a double-quoted AppleScript string, which in turn contains a single-quoted shell argument. Escape backslashes first, then single quotes:
+The path is embedded inside an AppleScript double-quoted string that contains a shell single-quoted argument. The string is passed directly to `execFile` — no shell layer. Escape backslashes first, then single quotes:
 
 ```ts
 function escapeForAppleScript(p: string): string {
@@ -91,10 +113,10 @@ function escapeForAppleScript(p: string): string {
 }
 ```
 
-Result is embedded as: `cd '${escapeForAppleScript(path)}' && claude`
+Embedded as: `cd '${escapeForAppleScript(path)}' && claude`
 
-**execFile context (Ghostty):**
-The path is passed as a direct element in the `args` array to `child_process.execFile` — no shell or AppleScript interpolation occurs. The path is embedded inside a zsh single-quoted string within the `-c` script argument. Escape only single quotes (backslash doubling is NOT applied):
+**Shell context (Ghostty):**
+The path is embedded in a zsh `-c` script string, passed as a direct `execFile` argument (no shell interpolation). Escape only single quotes — do not double backslashes:
 
 ```ts
 function escapeForShell(p: string): string {
@@ -102,42 +124,29 @@ function escapeForShell(p: string): string {
 }
 ```
 
-Result is embedded as: `cd '${escapeForShell(path)}' && claude; exec $SHELL`
-
----
-
-#### Error callback wrapping
-
-Both `child_process.exec` and `child_process.execFile` are wrapped in a `Promise`. The Node.js callback receives `(error, stdout, stderr)`. The promise rejects if:
-- `error` is non-null (non-zero exit code or spawn failure): reject with `Error(error.message + '\n' + stderr)`
-- `error` is null but `stderr` contains `"execution error"` or `"AppleScript"` (AppleScript-only): reject with `Error(stderr)`
+Embedded as: `cd '${escapeForShell(path)}' && claude; exec $SHELL`
 
 ---
 
 #### Terminal.app launcher
 
-Uses `child_process.exec` to run osascript. The AppleScript must be a properly structured block:
-
-```applescript
+```ts
+execFile('osascript', ['-e', `
 tell application "Terminal"
   activate
-  do script "cd '<escaped-path>' && claude"
+  do script "cd '${escapeForAppleScript(projectPath)}' && claude"
 end tell
+`]);
 ```
 
-Passed to `exec` as: `osascript -e '<the above as a single escaped string>'`
-
-Or passed as a heredoc / multi-line string using `osascript -e` repeated calls or a temp script file. The simplest approach: pass the script as a single `-e` argument with embedded newlines.
-
-After exec: apply silent-failure stderr check (see error callback wrapping above).
+`do script` opens a new Terminal window and runs the command.
 
 ---
 
 #### iTerm2 launcher
 
-Uses `child_process.exec` to run osascript:
-
-```applescript
+```ts
+execFile('osascript', ['-e', `
 tell application "iTerm2"
   activate
   if (count of windows) = 0 then
@@ -146,34 +155,28 @@ tell application "iTerm2"
   tell current window
     create tab with default profile
     tell current session of current tab
-      write text "cd '<escaped-path>' && claude"
+      write text "cd '${escapeForAppleScript(projectPath)}' && claude"
     end tell
   end tell
 end tell
+`]);
 ```
 
-`write text` sends the string followed by a return keystroke, executing the command. If no window is open, a new window is created before creating a tab. The bundle on disk is `iTerm.app`; the AppleScript application name is `"iTerm2"` — both are correct.
-
-After exec: apply silent-failure stderr check (see error callback wrapping above).
+`write text` sends the string followed by a return keystroke. If no window is open, a new window is created before creating a tab.
 
 ---
 
 #### Ghostty launcher
 
-Uses `child_process.execFile` (not `exec`) to avoid shell injection:
+Ghostty's `--command` flag sets the shell executable. Arguments after `--` are forwarded to that executable:
 
 ```ts
 const ghosttyBin = '/Applications/Ghostty.app/Contents/MacOS/ghostty';
 const shellScript = `cd '${escapeForShell(projectPath)}' && claude; exec $SHELL`;
-// args: ['--command', 'zsh', '-c', shellScript]
-// Ghostty interprets: --command <program> [args...], so 'zsh' is the program,
-// '-c' and shellScript are its arguments.
-execFile(ghosttyBin, ['--command', 'zsh', '-c', shellScript]);
+execFile(ghosttyBin, ['--command', 'zsh', '--', '-c', shellScript]);
 ```
 
-`exec $SHELL` is intentional: it keeps the Ghostty window open after `claude` exits, consistent with how Terminal.app and iTerm2 remain open after a command completes.
-
-No silent-failure stderr check for Ghostty (AppleScript not involved). Only the standard error-callback check applies.
+`exec $SHELL` is intentional: it keeps the Ghostty window open after `claude` exits, matching the behavior of Terminal.app and iTerm2 which remain open after a command completes.
 
 ---
 
@@ -219,10 +222,10 @@ No silent-failure stderr check for Ghostty (AppleScript not involved). Only the 
 ```
 User triggers command
   → extension.ts reads config + workspace path (first folder)
-  → terminal.ts checks app is installed (fs.existsSync on bundle/binary path)
+  → terminal.ts checks app is installed (fs.existsSync on bundle path)
   → terminal.ts escapes path (AppleScript or shell context)
-  → Terminal.app / iTerm2: child_process.exec runs osascript
-  → Ghostty: child_process.execFile runs ghostty binary with ['--command', 'zsh', '-c', script]
+  → Terminal.app / iTerm2: execFile('osascript', ['-e', script])
+  → Ghostty: execFile(ghosttyBin, ['--command', 'zsh', '--', '-c', script])
   → Promise rejects on non-zero exit or AppleScript stderr error
   → extension.ts shows error message on rejection
   → On success: silent
@@ -236,10 +239,10 @@ User triggers command
 |----------|----------|
 | No workspace folder open | `showErrorMessage("No workspace folder open")` |
 | App bundle not installed | `showErrorMessage("<App> is not installed")` |
-| exec/execFile non-zero exit | `showErrorMessage` with error.message + stderr |
+| execFile non-zero exit / spawn error | `showErrorMessage` with error.message + stderr |
 | AppleScript silent error in stderr (Terminal.app, iTerm2 only) | `showErrorMessage` with stderr |
-| Single quotes in path | `escapeForAppleScript` or `escapeForShell` applied before embedding |
-| Backslashes in path | `escapeForAppleScript` doubles them; `escapeForShell` leaves them unchanged |
+| Single quotes in path | Escaped by `escapeForAppleScript` or `escapeForShell` |
+| Backslashes in path | Doubled by `escapeForAppleScript`; unchanged by `escapeForShell` |
 | Success | Silent — no notification |
 
 ---

@@ -117,3 +117,50 @@ describe('Terminal.app launcher', () => {
     );
   });
 });
+
+describe('iTerm2 launcher', () => {
+  beforeEach(() => {
+    mockExistsSync.mockReturnValue(true);
+    mockExecFile.mockClear();
+    mockExecFile.mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(null, '', '');
+    });
+  });
+
+  it('calls execFile with osascript and -e flag', async () => {
+    await launchInTerminal('/Users/alice/myapp', 'iTerm2');
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'osascript',
+      expect.arrayContaining(['-e']),
+      expect.any(Function)
+    );
+  });
+
+  it('uses bundle ID com.googlecode.iterm2', async () => {
+    await launchInTerminal('/Users/alice/myapp', 'iTerm2');
+    const script: string = mockExecFile.mock.calls[0][1][1];
+    expect(script).toContain('com.googlecode.iterm2');
+  });
+
+  it('embeds the project path with write text', async () => {
+    await launchInTerminal('/Users/alice/myapp', 'iTerm2');
+    const script: string = mockExecFile.mock.calls[0][1][1];
+    expect(script).toContain('write text');
+    expect(script).toContain("cd '/Users/alice/myapp'");
+  });
+
+  it('escapes single quotes in path', async () => {
+    await launchInTerminal("/Users/alice/it's", 'iTerm2');
+    const script: string = mockExecFile.mock.calls[0][1][1];
+    expect(script).toContain("cd '/Users/alice/it'\\''s'");
+  });
+
+  it('rejects on AppleScript silent error in stderr', async () => {
+    mockExecFile.mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(null, '', 'execution error: iTerm2 (-1728)');
+    });
+    await expect(launchInTerminal('/path', 'iTerm2')).rejects.toThrow('execution error');
+  });
+});

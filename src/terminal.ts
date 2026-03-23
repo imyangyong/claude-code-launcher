@@ -41,6 +41,24 @@ end tell`;
   await execFilePromise('osascript', ['-e', script]);
 }
 
+async function launchITerm2(projectPath: string): Promise<void> {
+  const escaped = escapeForAppleScript(projectPath);
+  const script = `
+tell application id "com.googlecode.iterm2"
+  activate
+  if (count of windows) = 0 then
+    create window with default profile
+  end if
+  tell current window
+    create tab with default profile
+    tell current session of current tab
+      write text "cd '${escaped}' && claude"
+    end tell
+  end tell
+end tell`;
+  await execFilePromise('osascript', ['-e', script]);
+}
+
 export async function launchInTerminal(
   projectPath: string,
   app: TerminalApp
@@ -49,6 +67,8 @@ export async function launchInTerminal(
   switch (app) {
     case 'Terminal':
       return launchTerminalApp(projectPath);
+    case 'iTerm2':
+      return launchITerm2(projectPath);
     default:
       throw new Error(`Unsupported terminal: ${app}`);
   }

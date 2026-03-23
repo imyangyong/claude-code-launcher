@@ -1,4 +1,8 @@
-import { escapeForAppleScript, escapeForShell } from '../terminal';
+import * as fs from 'fs';
+import { escapeForAppleScript, escapeForShell, launchInTerminal, TerminalApp } from '../terminal';
+
+jest.mock('fs');
+const mockExistsSync = fs.existsSync as jest.Mock;
 
 describe('escapeForAppleScript', () => {
   it('leaves simple paths unchanged', () => {
@@ -40,4 +44,22 @@ describe('escapeForShell', () => {
       '/Users/alice/back\\slash'
     );
   });
+});
+
+describe('app existence paths', () => {
+  const PATHS: Record<string, string> = {
+    Terminal: '/System/Applications/Utilities/Terminal.app',
+    iTerm2: '/Applications/iTerm.app',
+    Ghostty: '/Applications/Ghostty.app'
+  };
+
+  it.each(Object.entries(PATHS))(
+    'throws "%s is not installed" when bundle is missing',
+    async (app, path) => {
+      mockExistsSync.mockImplementation((p: string) => p !== path);
+      await expect(
+        launchInTerminal('/some/path', app as TerminalApp)
+      ).rejects.toThrow(`${app} is not installed`);
+    }
+  );
 });

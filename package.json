@@ -2,6 +2,7 @@
   "name": "claude-code-launcher",
   "displayName": "Claude Code Launcher",
   "description": "Open the current project in a system terminal and launch Claude Code CLI",
+  "repository": "https://github.com/imyangyong/claude-code-launcher",
   "version": "0.0.1",
   "publisher": "imyangyong",
   "engines": { "vscode": "^1.85.0" },
